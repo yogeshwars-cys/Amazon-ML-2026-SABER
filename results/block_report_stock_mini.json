@@ -1,0 +1,38 @@
+{
+ "India": {
+  "pairs": 643055,
+  "per_s1": 29.06,
+  "recall_holdout": 0.99025,
+  "holdout_vq": 0.7729,
+  "holdout_vr": 0.8646,
+  "holdout_tq": 0.9134,
+  "holdout_tr": 0.9859,
+  "holdout_a": 0.0851,
+  "holdout_n": 0.082,
+  "recall_all": 0.99025,
+  "all_vq": 0.7729,
+  "all_vr": 0.8646,
+  "all_tq": 0.9134,
+  "all_tr": 0.9859,
+  "all_a": 0.0851,
+  "all_n": 0.082
+ },
+ "US": {
+  "pairs": 816374,
+  "per_s1": 24.77,
+  "recall_holdout": 0.99777,
+  "holdout_vq": 0.8884,
+  "holdout_vr": 0.9597,
+  "holdout_tq": 0.9369,
+  "holdout_tr": 0.9843,
+  "holdout_a": 0.085,
+  "holdout_n": 0.1311,
+  "recall_all": 0.99777,
+  "all_vq": 0.8884,
+  "all_vr": 0.9597,
+  "all_tq": 0.9369,
+  "all_tr": 0.9843,
+  "all_a": 0.085,
+  "all_n": 0.1311
+ }
+}

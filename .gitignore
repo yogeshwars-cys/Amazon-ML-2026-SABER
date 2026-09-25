@@ -1,0 +1,12 @@
+# challenge data and all derived artifacts stay local
+dataset/
+work/
+*.tsv
+*.parquet
+*.npy
+*.npz
+*.pkl
+*.pt
+*.bin
+*.log
+__pycache__/
