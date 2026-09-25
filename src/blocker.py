@@ -12,7 +12,7 @@ Raw legs are searched once at a generous K and cached (work/legs_{split}_{countr
 import argparse, json, os, re, sys, time, gc, numpy as np, polars as pl, torch
 from sklearn.feature_extraction.text import TfidfVectorizer
 sys.path.insert(0, os.path.dirname(__file__))
-from legs import vault_search, tfidf_search, tfidf_partitioned
+from legs import vault_search, tfidf_search, tfidf_partitioned, tfidf_partitioned_both
 from region import regions_for_split
 from pair_features import string_features
 from partitions import load as partition_ids
@@ -24,17 +24,34 @@ LEGAL = re.compile(r"\b(private|pvt|limited|ltd|llc|l l c|inc|incorporated|corp|
                    r"the|and|pc|pllc|lp|sarl|sas|sa|eurl|sci|gmbh)\b")
 
 
-def load(split):
-    cols = ["entity_id", "country", "name", "addr", "business_name", "business_address"]
+def load(split, cols=("entity_id", "country", "name", "addr", "business_name", "business_address")):
+    cols = list(cols)
     s1 = pl.read_parquet(W + f"{split}_source1.parquet", columns=cols)
     r = pl.concat([pl.read_parquet(W + f"{split}_{s}.parquet", columns=cols)
                    for s in ("source2", "source3")])
     return s1, r
 
 
+class _RowCat:
+    """Row-wise concatenation of memory maps, gathered on demand (never materialises the whole R side in RAM)."""
+
+    def __init__(self, parts):
+        self.parts = parts; self.off = np.cumsum([0] + [len(x) for x in parts])
+        self.shape = (int(self.off[-1]), parts[0].shape[1])
+
+    def __len__(self): return self.shape[0]
+
+    def __getitem__(self, idx):
+        idx = np.asarray(idx); out = np.empty((len(idx), self.shape[1]), self.parts[0].dtype)
+        for p, a, b in zip(self.parts, self.off[:-1], self.off[1:]):
+            m = (idx >= a) & (idx < b)
+            if m.any(): out[m] = p[idx[m] - a]
+        return out
+
+
 def load_emb(tag, split):
     e1 = np.load(W + f"emb_{tag}_{split}_source1.npy", mmap_mode="r")
-    er = np.concatenate([np.load(W + f"emb_{tag}_{split}_{s}.npy", mmap_mode="r") for s in ("source2", "source3")])
+    er = _RowCat([np.load(W + f"emb_{tag}_{split}_{s}.npy", mmap_mode="r") for s in ("source2", "source3")])
     return e1, er
 
 
@@ -69,36 +86,72 @@ def build_tfidf(tq, tr, max_df=1.0, fit_n=1_500_000, chunk=400_000):
     return tf(tq), tf(tr), vec
 
 
+STAGES = ("vault", "tfidf", "keys")
+
+
+def _countries(s1, r, a):
+    cs = sorted(set(s1["country"].unique().to_list()) | set(r["country"].unique().to_list()))
+    return [c for c in cs if not a.country or c in a.country]
+
+
 def search(a):
-    s1, r = load(a.split); e1, er = load_emb(a.emb, a.split)
-    g1, gr = regions_for_split(a.split, s1, r) if a.partition else (None, None)
-    for c in sorted(set(s1["country"].unique().to_list()) | set(r["country"].unique().to_list())):
+    """Legs per country. --stage vault|tfidf|keys runs one stage and caches it (legs_..._{c}.{stage}.npz), so each
+    stage can run in its own process and RAM is fully released between stages; the parts are combined into
+    legs_..._{c}.npz once all three exist. --stage all runs everything in this process."""
+    need_text = a.stage in ("all", "tfidf", "keys")
+    cols = ("entity_id", "country", "name", "addr", "business_address") if need_text else ("entity_id", "country")
+    s1, r = load(a.split, cols); e1, er = load_emb(a.emb, a.split)
+    g1 = gr = None
+    if a.partition and a.stage in ("all", "tfidf"): g1, gr = regions_for_split(a.split, s1, r)
+    if need_text: r = r.drop("business_address"); s1 = s1.drop("business_address"); gc.collect()
+    for c in _countries(s1, r, a):
         out = W + f"legs_{a.emb}_{a.split}_{c}.npz"
         if os.path.exists(out) and not a.force: print("skip", c); continue
         qi = np.where((s1["country"] == c).to_numpy())[0]; ri = np.where((r["country"] == c).to_numpy())[0]
-        print(f"== {c}: S1 {len(qi)}  R {len(ri)}", flush=True)
+        print(f"== {c}: S1 {len(qi)}  R {len(ri)}  stage {a.stage}", flush=True)
         if len(qi) == 0 or len(ri) == 0: np.savez(out, qi=qi, ri=ri); continue
+        stages = STAGES if a.stage == "all" else (a.stage,)
         res = {"qi": qi, "ri": ri}; t = time.time()
-        Q = np.asarray(e1[qi]); R = np.asarray(er[ri])
-        mu = (Q.astype(np.float32).sum(0) + R.astype(np.float32).sum(0)) / (len(Q) + len(R))
-        res["vq_i"], res["vq_s"] = vault_search(Q, R, min(KQ, len(R)), mu=mu); print(" vault S1->R", f"{time.time()-t:.0f}s", flush=True)
-        res["vr_i"], res["vr_s"] = vault_search(R, Q, min(KR, len(Q)), mu=mu); print(" vault R->S1", f"{time.time()-t:.0f}s", flush=True)
-        del Q, R; gc.collect(); torch.cuda.empty_cache()
-        tq = (s1["name"][qi] + ", " + s1["addr"][qi]).to_list(); tr = (r["name"][ri] + ", " + r["addr"][ri]).to_list()
-        Tq, Tr, vec = build_tfidf(tq, tr, a.max_df); print(f" tfidf fit V={len(vec.vocabulary_)} nnz={Tr.nnz}", f"{time.time()-t:.0f}s", flush=True)
-        if g1 is not None:                         # region-partitioned trigram leg (unknown regions -> whole country)
-            gq = [g1[i] for i in qi]; gk = [gr[j] for j in ri]
-            res["tq_i"], res["tq_s"] = tfidf_partitioned(Tq, Tr, gq, gk, min(KQ, len(ri))); print(" tfidf S1->R (partitioned)", f"{time.time()-t:.0f}s", flush=True)
-            res["tr_i"], res["tr_s"] = tfidf_partitioned(Tr, Tq, gk, gq, min(KR, len(qi))); print(" tfidf R->S1 (partitioned)", f"{time.time()-t:.0f}s", flush=True)
-        else:
-            res["tq_i"], res["tq_s"] = tfidf_search(Tq, Tr, min(KQ, len(ri))); print(" tfidf S1->R", f"{time.time()-t:.0f}s", flush=True)
-            res["tr_i"], res["tr_s"] = tfidf_search(Tr, Tq, min(KR, len(qi))); print(" tfidf R->S1", f"{time.time()-t:.0f}s", flush=True)
-        del Tr, Tq, vec; gc.collect()
-        res["a_i"], res["a_j"] = key_pairs(addr_key(s1["addr"][qi].to_list()), addr_key(r["addr"][ri].to_list()), 30)
-        res["n_i"], res["n_j"] = key_pairs(name_key(s1["name"][qi].to_list(), s1["addr"][qi].to_list()),
-                                           name_key(r["name"][ri].to_list(), r["addr"][ri].to_list()), 30)
-        print(f" keys addr {len(res['a_i'])} name {len(res['n_i'])}", f"{time.time()-t:.0f}s", flush=True)
-        np.savez(out, **res)
+        for st in stages:
+            part = W + f"legs_{a.emb}_{a.split}_{c}.{st}.npz"
+            if a.stage != "all" and os.path.exists(part) and not a.force: print(" have", st); continue
+            got = {}
+            if st == "vault":
+                Q = np.asarray(e1[qi]); R = er[ri]
+                mu = (Q.astype(np.float32).sum(0) + R.astype(np.float32).sum(0)) / (len(Q) + len(R))
+                got["vq_i"], got["vq_s"] = vault_search(Q, R, min(KQ, len(R)), mu=mu); print(" vault S1->R", f"{time.time()-t:.0f}s", flush=True)
+                got["vr_i"], got["vr_s"] = vault_search(R, Q, min(KR, len(Q)), mu=mu); print(" vault R->S1", f"{time.time()-t:.0f}s", flush=True)
+                del Q, R
+            elif st == "tfidf":
+                tq = (s1["name"][qi] + ", " + s1["addr"][qi]).to_list(); tr = (r["name"][ri] + ", " + r["addr"][ri]).to_list()
+                Tq, Tr, vec = build_tfidf(tq, tr, a.max_df); del tq, tr
+                print(f" tfidf fit V={len(vec.vocabulary_)} nnz={Tr.nnz}", f"{time.time()-t:.0f}s", flush=True)
+                if g1 is not None:                         # region-partitioned trigram leg (unknown regions -> whole country)
+                    gq = [g1[i] for i in qi]; gk = [gr[j] for j in ri]
+                    got["tq_i"], got["tq_s"], got["tr_i"], got["tr_s"] = tfidf_partitioned_both(Tq, Tr, gq, gk, min(KQ, len(ri)), min(KR, len(qi)))
+                    print(" tfidf S1->R + R->S1 (partitioned, one pass)", f"{time.time()-t:.0f}s", flush=True)
+                else:
+                    got["tq_i"], got["tq_s"] = tfidf_search(Tq, Tr, min(KQ, len(ri))); print(" tfidf S1->R", f"{time.time()-t:.0f}s", flush=True)
+                    got["tr_i"], got["tr_s"] = tfidf_search(Tr, Tq, min(KR, len(qi))); print(" tfidf R->S1", f"{time.time()-t:.0f}s", flush=True)
+                del Tr, Tq, vec
+            else:
+                got["a_i"], got["a_j"] = key_pairs(addr_key(s1["addr"][qi].to_list()), addr_key(r["addr"][ri].to_list()), 30)
+                got["n_i"], got["n_j"] = key_pairs(name_key(s1["name"][qi].to_list(), s1["addr"][qi].to_list()),
+                                                   name_key(r["name"][ri].to_list(), r["addr"][ri].to_list()), 30)
+                print(f" keys addr {len(got['a_i'])} name {len(got['n_i'])}", f"{time.time()-t:.0f}s", flush=True)
+            gc.collect(); torch.cuda.empty_cache()
+            if a.stage == "all": res.update(got)
+            else: np.savez(part, qi=qi, ri=ri, **got)
+        if a.stage != "all":
+            parts = [W + f"legs_{a.emb}_{a.split}_{c}.{st}.npz" for st in STAGES]
+            if not all(os.path.exists(f) for f in parts): continue
+            for f in parts:
+                with np.load(f) as z:                      # closed before the parts are removed (Windows locks open files)
+                    assert (z["qi"] == qi).all() and (z["ri"] == ri).all(), f
+                    res.update({k: z[k] for k in z.files if k not in ("qi", "ri")})
+        np.savez(out, **res); print(" wrote", out, flush=True)
+        if a.stage != "all":
+            for f in parts: os.remove(f)
 
 
 # ---------------------------------------------------------------- merge
@@ -192,7 +245,9 @@ def merge(a):
     g1, gr = (None, None) if (a.report_only or a.tune) else regions_for_split(a.split, s1, r)
     for f in sorted(os.listdir(W)):
         if not (f.startswith(f"legs_{a.emb}_{a.split}_") and f.endswith(".npz")): continue
-        c = f[len(f"legs_{a.emb}_{a.split}_"):-4]; L = dict(np.load(W + f)); qi, ri = L["qi"], L["ri"]
+        c = f[len(f"legs_{a.emb}_{a.split}_"):-4]
+        if "." in c or (a.country and c not in a.country): continue          # stage parts / other countries
+        L = dict(np.load(W + f)); qi, ri = L["qi"], L["ri"]
         s1c = s1["entity_id"].to_numpy()[qi]; rc = r["entity_id"].to_numpy()[ri]
         if len(qi) == 0 or len(ri) == 0: continue
         truth = truth_local(a.split, s1c, rc)
@@ -246,12 +301,35 @@ def merge(a):
         wrote = True
         print(c, "pairs", len(key), "parts", len(bounds) - 1, f"{time.time()-t:.0f}s", flush=True)
         del E1, ER, Tq, Tr, L, rec; gc.collect()
+    if a.country:                                                # per-country process: finalize combines these
+        for c in a.country:
+            with open(W + f"mergepart_{a.emb}_{a.split}_{c}.json", "w") as fh:
+                json.dump({"report": reps.get(c), "rows": nrows.get(c, 0)}, fh)
+        if missed: pl.concat(missed).write_parquet(W + f"missedpart_{a.emb}_{a.split}_{a.country[0]}.parquet")
+        return
     json.dump(reps, open(W + f"block_report_{a.emb}_{a.split}.json", "w"), indent=1)
     if missed:
         pl.concat(missed).join(partition_ids().rename({"entity_id": "source1_entity_id", "part": "s1_part"}),
                                on="source1_entity_id", how="left").write_parquet(W + f"missed_{a.emb}_{a.split}.parquet")
     if wrote:
         write_tsv(a, s1); write_manifest(a, p, reps, nrows, s1)
+
+
+def finalize(a):
+    """Combine per-country merge outputs (merge --country) into the report, missed file, TSV and manifest."""
+    p = dict(DEFAULT); p.update(json.loads(a.params) if a.params else {})
+    s1 = pl.read_parquet(W + f"{a.split}_source1.parquet", columns=["entity_id"])
+    reps, nrows = {}, {}
+    for f in sorted(x for x in os.listdir(W) if x.startswith(f"mergepart_{a.emb}_{a.split}_")):
+        c = f[len(f"mergepart_{a.emb}_{a.split}_"):-5]; z = json.load(open(W + f))
+        if z["report"] is not None: reps[c] = z["report"]
+        nrows[c] = z["rows"]
+    json.dump(reps, open(W + f"block_report_{a.emb}_{a.split}.json", "w"), indent=1)
+    mp = sorted(W + x for x in os.listdir(W) if x.startswith(f"missedpart_{a.emb}_{a.split}_"))
+    if mp:
+        pl.concat([pl.read_parquet(x) for x in mp], how="vertical_relaxed")           .join(partition_ids().rename({"entity_id": "source1_entity_id", "part": "s1_part"}), on="source1_entity_id", how="left")           .write_parquet(W + f"missed_{a.emb}_{a.split}.parquet")
+    write_tsv(a, s1); write_manifest(a, p, reps, nrows, s1)
+    print("finalized", a.split, {c: (v["recall_all"], v["per_s1"]) for c, v in reps.items()}, nrows, flush=True)
 
 
 def write_manifest(a, p, reps, nrows, s1):
@@ -305,11 +383,13 @@ def evaluate_holdout(L, hold, hq, p):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["search", "merge"]); ap.add_argument("--split", default="train")
+    ap.add_argument("cmd", choices=["search", "merge", "finalize"]); ap.add_argument("--split", default="train")
+    ap.add_argument("--country", nargs="*", default=None, help="restrict to these countries (one process per country)")
+    ap.add_argument("--stage", choices=("all",) + STAGES, default="all")
     ap.add_argument("--emb", required=True); ap.add_argument("--force", action="store_true")
     ap.add_argument("--max-df", dest="max_df", type=float, default=1.0)
     ap.add_argument("--no-partition", dest="partition", action="store_false")
     ap.add_argument("--params", default=None); ap.add_argument("--tune", action="store_true")
     ap.add_argument("--report-only", dest="report_only", action="store_true")
     a = ap.parse_args()
-    search(a) if a.cmd == "search" else merge(a)
+    {"search": search, "merge": merge, "finalize": finalize}[a.cmd](a)

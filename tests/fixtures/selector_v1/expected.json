@@ -1,0 +1,330 @@
+{
+ "fixture_version": 1,
+ "schema_version": 3,
+ "p_min": 0.05,
+ "beta2": 0.25,
+ "shards": [
+  "cand_fx_valid_India_000.parquet",
+  "cand_fx_valid_India_001.parquet",
+  "cand_fx_valid_US_000.parquet",
+  "cand_fx_valid_US_001.parquet"
+ ],
+ "rows": 28,
+ "universe_anchors": 19,
+ "roster_anchors": 18,
+ "zero_candidate_anchors": [
+  "S1-FX-B01",
+  "S1-FX-B02"
+ ],
+ "competition_only_anchors": [
+  "S1-FX-A99"
+ ],
+ "case_of_anchor": {
+  "S1-FX-A01": "outside_roster_parent",
+  "S1-FX-A99": "outside_roster_parent",
+  "S1-FX-B01": "zero_candidate",
+  "S1-FX-B02": "zero_candidate",
+  "S1-FX-C01": "singleton_distractors",
+  "S1-FX-D01": "tied_parents",
+  "S1-FX-D02": "tied_parents",
+  "S1-FX-E01": "multi_accept",
+  "S1-FX-F01": "below_p_min",
+  "S1-FX-F02": "below_p_min",
+  "S1-FX-F03": "below_p_min",
+  "S1-FX-F04": "below_p_min",
+  "S1-FX-G01": "same_child_two_countries",
+  "S1-FX-G02": "same_child_two_countries",
+  "S1-FX-H01": "prefix_cut",
+  "S1-FX-I01": "p_has_match_decides",
+  "S1-FX-J01": "roster_competition",
+  "S1-FX-J02": "roster_competition",
+  "S1-FX-K01": "tied_children"
+ },
+ "modes": {
+  "explicit_p_has_match": {
+   "accepted": {
+    "S1-FX-A01": [
+     "S2-FX-A02"
+    ],
+    "S1-FX-B01": [],
+    "S1-FX-B02": [],
+    "S1-FX-C01": [],
+    "S1-FX-D01": [
+     "S2-FX-DT"
+    ],
+    "S1-FX-D02": [
+     "S2-FX-D2B"
+    ],
+    "S1-FX-E01": [
+     "S2-FX-E1",
+     "S2-FX-E3",
+     "S3-FX-E2"
+    ],
+    "S1-FX-F01": [],
+    "S1-FX-F02": [
+     "S3-FX-F2B"
+    ],
+    "S1-FX-F03": [],
+    "S1-FX-F04": [],
+    "S1-FX-G01": [
+     "S2-FX-GG"
+    ],
+    "S1-FX-G02": [
+     "S2-FX-GG"
+    ],
+    "S1-FX-H01": [
+     "S2-FX-H1"
+    ],
+    "S1-FX-I01": [],
+    "S1-FX-J01": [
+     "S2-FX-J1"
+    ],
+    "S1-FX-J02": [
+     "S2-FX-JX"
+    ],
+    "S1-FX-K01": [
+     "S2-FX-KA",
+     "S3-FX-KB"
+    ]
+   },
+   "f05": {
+    "S1-FX-A01": 1.0,
+    "S1-FX-B01": 0.0,
+    "S1-FX-B02": 1.0,
+    "S1-FX-C01": 1.0,
+    "S1-FX-D01": 1.0,
+    "S1-FX-D02": 1.0,
+    "S1-FX-E01": 1.0,
+    "S1-FX-F01": 0.0,
+    "S1-FX-F02": 1.0,
+    "S1-FX-F03": 1.0,
+    "S1-FX-F04": 1.0,
+    "S1-FX-G01": 1.0,
+    "S1-FX-G02": 1.0,
+    "S1-FX-H01": 0.833333,
+    "S1-FX-I01": 1.0,
+    "S1-FX-J01": 1.0,
+    "S1-FX-J02": 1.0,
+    "S1-FX-K01": 1.0
+   },
+   "macro_f05": 0.87963
+  },
+  "max_edge_fallback": {
+   "accepted": {
+    "S1-FX-A01": [
+     "S2-FX-A02"
+    ],
+    "S1-FX-B01": [],
+    "S1-FX-B02": [],
+    "S1-FX-C01": [],
+    "S1-FX-D01": [
+     "S2-FX-DT"
+    ],
+    "S1-FX-D02": [
+     "S2-FX-D2B"
+    ],
+    "S1-FX-E01": [
+     "S2-FX-E1",
+     "S2-FX-E3",
+     "S3-FX-E2"
+    ],
+    "S1-FX-F01": [],
+    "S1-FX-F02": [
+     "S3-FX-F2B"
+    ],
+    "S1-FX-F03": [],
+    "S1-FX-F04": [],
+    "S1-FX-G01": [
+     "S2-FX-GG"
+    ],
+    "S1-FX-G02": [
+     "S2-FX-GG"
+    ],
+    "S1-FX-H01": [
+     "S2-FX-H1"
+    ],
+    "S1-FX-I01": [
+     "S2-FX-I1"
+    ],
+    "S1-FX-J01": [
+     "S2-FX-J1"
+    ],
+    "S1-FX-J02": [
+     "S2-FX-JX"
+    ],
+    "S1-FX-K01": [
+     "S2-FX-KA",
+     "S3-FX-KB"
+    ]
+   },
+   "f05": {
+    "S1-FX-A01": 1.0,
+    "S1-FX-B01": 0.0,
+    "S1-FX-B02": 1.0,
+    "S1-FX-C01": 1.0,
+    "S1-FX-D01": 1.0,
+    "S1-FX-D02": 1.0,
+    "S1-FX-E01": 1.0,
+    "S1-FX-F01": 0.0,
+    "S1-FX-F02": 1.0,
+    "S1-FX-F03": 1.0,
+    "S1-FX-F04": 1.0,
+    "S1-FX-G01": 1.0,
+    "S1-FX-G02": 1.0,
+    "S1-FX-H01": 0.833333,
+    "S1-FX-I01": 0.0,
+    "S1-FX-J01": 1.0,
+    "S1-FX-J02": 1.0,
+    "S1-FX-K01": 1.0
+   },
+   "macro_f05": 0.824074
+  }
+ },
+ "invalid": {
+  "dup_within_shard": {
+   "validate": "frame",
+   "error_contains": "duplicate"
+  },
+  "dup_across_shards": {
+   "validate": "parts",
+   "error_contains": "duplicate candidate edge across"
+  },
+  "null_candidate_id": {
+   "validate": "frame",
+   "error_contains": "null value"
+  },
+  "null_cand_source": {
+   "validate": "frame",
+   "error_contains": "null value"
+  },
+  "invalid_cand_source": {
+   "validate": "frame",
+   "error_contains": "cand_source must be S2/S3"
+  },
+  "retrieval_rank_negative": {
+   "validate": "frame",
+   "error_contains": "zero based"
+  },
+  "retrieval_rank_over_99": {
+   "validate": "frame",
+   "error_contains": "zero based"
+  },
+  "sentinel_flag_mismatch": {
+   "validate": "frame",
+   "error_contains": "sentinel disagrees"
+  },
+  "competition_rank_zero_based": {
+   "validate": "frame",
+   "error_contains": "one based"
+  },
+  "missing_required_column": {
+   "validate": "frame",
+   "error_contains": "missing candidate columns"
+  },
+  "roster_missing_anchor": {
+   "validate": "parts",
+   "error_contains": "absent from roster"
+  },
+  "roster_duplicate_anchor": {
+   "validate": "parts",
+   "error_contains": "duplicate S1 ids"
+  },
+  "label_presence_disagrees": {
+   "validate": "parts",
+   "error_contains": "disagree on label presence"
+  }
+ },
+ "metric_cases": [
+  {
+   "name": "empty_empty",
+   "pred": [],
+   "truth": [],
+   "f05": 1.0
+  },
+  {
+   "name": "pred_empty_truth_nonempty",
+   "pred": [],
+   "truth": [
+    "a"
+   ],
+   "f05": 0.0
+  },
+  {
+   "name": "pred_nonempty_truth_empty",
+   "pred": [
+    "a"
+   ],
+   "truth": [],
+   "f05": 0.0
+  },
+  {
+   "name": "false_positive_only",
+   "pred": [
+    "b"
+   ],
+   "truth": [
+    "a"
+   ],
+   "f05": 0.0
+  },
+  {
+   "name": "exact",
+   "pred": [
+    "a",
+    "b"
+   ],
+   "truth": [
+    "a",
+    "b"
+   ],
+   "f05": 1.0
+  },
+  {
+   "name": "partial_p05_r033",
+   "pred": [
+    "a",
+    "b"
+   ],
+   "truth": [
+    "a",
+    "c",
+    "d"
+   ],
+   "f05": 0.454545
+  },
+  {
+   "name": "partial_p1_r05",
+   "pred": [
+    "a"
+   ],
+   "truth": [
+    "a",
+    "b"
+   ],
+   "f05": 0.833333
+  },
+  {
+   "name": "macro_mix",
+   "pred": {
+    "x": [],
+    "y": [
+     "a"
+    ],
+    "z": [
+     "a",
+     "b"
+    ]
+   },
+   "truth": {
+    "x": [],
+    "y": [
+     "b"
+    ],
+    "z": [
+     "a"
+    ]
+   },
+   "macro_f05": 0.518519
+  }
+ ]
+}

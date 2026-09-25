@@ -80,7 +80,9 @@ ALIAS_PARTS = "E"                                          # label partitions th
 def regions_for_split(split, s1, r):
     f = W + f"regions_{split}_{ALIAS_PARTS}.json"
     if os.path.exists(f):
-        z = json.load(open(f)); return [frozenset(x) for x in z["g1"]], [frozenset(x) for x in z["gr"]]
+        z = json.load(open(f)); memo = {}                  # intern: few distinct region sets, millions of records
+        g = lambda xs: [memo.setdefault(tuple(x), frozenset(x)) for x in xs]
+        g1 = g(z.pop("g1")); gr = g(z.pop("gr")); del z; return g1, gr
     vf = W + f"region_model_{ALIAS_PARTS}.json"
     if not os.path.exists(vf):
         from partitions import pairs as part_pairs

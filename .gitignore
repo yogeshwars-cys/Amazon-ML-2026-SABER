@@ -10,3 +10,6 @@ work/
 *.bin
 *.log
 __pycache__/
+
+# selector contract fixtures are small and versioned
+!tests/fixtures/**/*.parquet

@@ -74,26 +74,37 @@ def _csr_gpu(M):
                                    torch.from_numpy(M.data.astype(np.float32)), size=M.shape, device=DEV)
 
 
-def tfidf_search(Qs, Ks, k, qblock=512, nnz_chunk=40_000_000):
-    """Qs (nq,V), Ks (nk,V) scipy CSR, rows L2-normalised. Keys chunked by nnz so a chunk + a score block fit."""
+def tfidf_search(Qs, Ks, k, qblock=512, nnz_chunk=40_000_000, col_k=0):
+    """Qs (nq,V), Ks (nk,V) scipy CSR, rows L2-normalised. Keys chunked by nnz so a chunk + a score block fit.
+    col_k > 0 also returns, from the same score blocks, each key's top-col_k queries (the reverse direction),
+    so a bidirectional leg costs one sparse product instead of two."""
     Ks = Ks.tocsr(); Qs = Qs.tocsr()
     bounds, s = [], 0
     while s < Ks.shape[0]:                               # row ranges holding <= nnz_chunk non-zeros and <= 600k rows
         e = int(np.searchsorted(Ks.indptr, Ks.indptr[s] + nnz_chunk, side="right")) - 1
         e = max(s + 1, min(e, s + 600_000, Ks.shape[0])); bounds.append((s, e)); s = e
-    nq = Qs.shape[0]; out_i = np.full((nq, k), -1, np.int32); out_s = np.full((nq, k), -1.0, np.float32)
+    nq, nk = Qs.shape[0], Ks.shape[0]
     best_v = torch.full((nq, k), -1.0); best_i = torch.full((nq, k), -1, dtype=torch.int32)
+    ck = min(col_k, nq)
+    col_v = torch.full((nk, ck), -1.0); col_i = torch.full((nk, ck), -1, dtype=torch.int32)
     for (a, b) in bounds:                                # outer loop over key chunks: each chunk uploaded once
         Kg = _csr_gpu(Ks[a:b])
+        if ck: cv = col_v[a:b].to(DEV); ci = col_i[a:b].to(DEV).long()
         for s in range(0, nq, qblock):
-            qdT = torch.from_numpy(np.ascontiguousarray(Qs[s:s + qblock].toarray().T)).to(DEV)   # (V, b) contiguous:
+            qdT = _csr_gpu(Qs[s:s + qblock]).to_dense().T.contiguous()          # (V, b) contiguous, densified on GPU:
             sc = torch.sparse.mm(Kg, qdT).T.contiguous()                      # a transposed view is 35x slower
             t = sc.topk(min(k, sc.shape[1]), dim=1)
             v = torch.cat([best_v[s:s + qblock].to(DEV), t.values], 1)
             i = torch.cat([best_i[s:s + qblock].to(DEV).long(), t.indices + a], 1)
             tt = v.topk(k, dim=1)
             best_v[s:s + qblock] = tt.values.cpu(); best_i[s:s + qblock] = i.gather(1, tt.indices).int().cpu()
+            if ck:                                                            # reverse: best queries per key
+                tc = sc.topk(min(ck, sc.shape[0]), dim=0)
+                v2 = torch.cat([cv, tc.values.T], 1); i2 = torch.cat([ci, tc.indices.T + s], 1)
+                t2 = v2.topk(ck, dim=1); cv = t2.values; ci = i2.gather(1, t2.indices)
+        if ck: col_v[a:b] = cv.cpu(); col_i[a:b] = ci.int().cpu()
         del Kg; torch.cuda.empty_cache()
+    if ck: return best_i.numpy(), best_v.numpy(), col_i.numpy(), col_v.numpy()
     return best_i.numpy(), best_v.numpy()
 
 
@@ -130,3 +141,34 @@ def tfidf_partitioned(Qs, Ks, gq, gk, k, min_block=1):
         _merge_rows(best_i, best_s, qi, ii, ss)
     best_s[~np.isfinite(best_s)] = -1.0
     return best_i, best_s
+
+
+def tfidf_partitioned_both(Qs, Ks, gq, gk, kq, kr):
+    """Both trigram directions in one pass over the region-partitioned pairs. The pair set is symmetric
+    (q vs j iff gq[q] & gk[j], or either is empty), so each key's top-kr queries come from the same score blocks.
+    Returns (q->k idx, score, k->q idx, score), matching tfidf_partitioned(Qs, Ks, ...) and (Ks, Qs, ...)."""
+    from collections import defaultdict
+    nq, nk = Qs.shape[0], Ks.shape[0]
+    bq_i = np.full((nq, kq), -1, np.int32); bq_s = np.full((nq, kq), -np.inf, np.float32)
+    bk_i = np.full((nk, kr), -1, np.int32); bk_s = np.full((nk, kr), -np.inf, np.float32)
+    qg, kg = defaultdict(list), defaultdict(list)
+    for i, g in enumerate(gq):
+        for x in g: qg[x].append(i)
+    for j, g in enumerate(gk):
+        for x in g: kg[x].append(j)
+    k_unk = np.array([j for j, g in enumerate(gk) if not g], np.int64)
+    q_unk = np.array([i for i, g in enumerate(gq) if not g], np.int64)
+    jobs = [(np.array(qg[x], np.int64), np.union1d(np.array(kg.get(x, []), np.int64), k_unk)) for x in qg]
+    if len(q_unk): jobs.append((q_unk, np.arange(nk)))
+    for qi, kj in sorted(jobs, key=lambda t: -len(t[0]) * len(t[1])):
+        if len(kj) == 0: continue
+        ii, ss, ci, cs = tfidf_search(Qs[qi], Ks[kj], min(kq, len(kj)), col_k=kr)
+        ii = np.where(ii >= 0, kj[np.clip(ii, 0, None)], -1).astype(np.int32)
+        ci = np.where(ci >= 0, qi[np.clip(ci, 0, None)], -1).astype(np.int32)
+        pad = lambda a, b, w: (np.pad(a, ((0, 0), (0, w - a.shape[1])), constant_values=-1),
+                               np.pad(b, ((0, 0), (0, w - b.shape[1])), constant_values=-np.inf)) if a.shape[1] < w else (a, b)
+        ii, ss = pad(ii, ss, kq); ci, cs = pad(ci, cs, kr)
+        cs = np.where(ci >= 0, cs, -np.inf).astype(np.float32)
+        _merge_rows(bq_i, bq_s, qi, ii, ss); _merge_rows(bk_i, bk_s, kj, ci, cs)
+    bq_s[~np.isfinite(bq_s)] = -1.0; bk_s[~np.isfinite(bk_s)] = -1.0
+    return bq_i, bq_s, bk_i, bk_s
