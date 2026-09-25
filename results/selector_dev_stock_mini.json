@@ -1,0 +1,11 @@
+{
+ "stage1": 0.98491,
+ "stage1_thr0.5": 0.98319,
+ "stage2": 0.98633,
+ "stage2_thr0.5": 0.98505,
+ "oracle_given_candidates": 0.9982,
+ "by_country": {
+  "US": 0.98901,
+  "India": 0.9823
+ }
+}

@@ -6,7 +6,7 @@ region vocabulary, directly or through a learned alias. Two records are compared
 share a region, or if either has none (unknown -> searched against the whole country).
 
 vocabulary (per country) = normalised comma parts seen in >= MIN_SHARE of that country's S1 records (S1 is the clean
-reference source, so this works unsupervised on unseen countries such as France); aliases (train pairs only) map
+reference source, so this works unsupervised on unseen countries such as France); aliases (train pairs of partition E only, see partitions.py, so holdout / matcher labels never leak in) map
 frequent non-vocabulary parts of S2/S3 to a vocabulary term with >= 90% purity (e.g. 'up' -> 'uttar pradesh',
 transliterated Indic state names, 'texas' -> 'tx')."""
 import json, os, sys, numpy as np, polars as pl
@@ -43,7 +43,8 @@ def build_vocab(s1):
     return voc
 
 
-def learn_alias(s1, r, pairs, voc):
+def learn_alias(s1, r, pairs, voc, full_pairs=7_638_365):
+    min_n = max(12, round(30 * pairs.height / full_pairs))   # support threshold scaled to the share of labels used
     p1 = s1.select(pl.col("entity_id").alias("s1"), "country", _parts_expr("business_address").alias("P1"))
     pr = r.select(pl.col("entity_id").alias("m"), _parts_expr("business_address").alias("PR"))
     a = pairs.join(p1, on="s1").join(pr, on="m")
@@ -55,7 +56,7 @@ def learn_alias(s1, r, pairs, voc):
         x = x.filter(pl.col("g").list.len() == 1).with_columns(pl.col("g").list.first()).explode("o").drop_nulls()
         g = x.group_by("o", "g").len().with_columns(pl.col("len").sum().over("o").alias("tot"))
         # purity of o -> g among pairs whose S1 has exactly one vocabulary region
-        g = g.filter((pl.col("len") >= 30) & (pl.col("len") >= 0.9 * pl.col("tot")) & ~pl.col("o").str.contains(r"\d"))
+        g = g.filter((pl.col("len") >= min_n) & (pl.col("len") >= 0.9 * pl.col("tot")) & ~pl.col("o").str.contains(r"\d"))
         alias[c] = dict(zip(g["o"].to_list(), g["g"].to_list()))
         print(f"region aliases {c}: {len(alias[c])}", flush=True)
     return alias
@@ -73,15 +74,19 @@ def assign(df, voc, alias):
     return out
 
 
+ALIAS_PARTS = "E"                                          # label partitions the aliases may be fitted on
+
+
 def regions_for_split(split, s1, r):
-    f = W + f"regions_{split}.json"
+    f = W + f"regions_{split}_{ALIAS_PARTS}.json"
     if os.path.exists(f):
         z = json.load(open(f)); return [frozenset(x) for x in z["g1"]], [frozenset(x) for x in z["gr"]]
-    vf = W + "region_model.json"
+    vf = W + f"region_model_{ALIAS_PARTS}.json"
     if not os.path.exists(vf):
+        from partitions import pairs as part_pairs
         tr1 = pl.read_parquet(W + "train_source1.parquet", columns=["entity_id", "country", "business_address"])
         trr = pl.concat([pl.read_parquet(W + f"train_{s}.parquet", columns=["entity_id", "business_address"]) for s in ("source2", "source3")])
-        voc = build_vocab(tr1); alias = learn_alias(tr1, trr, pl.read_parquet(W + "train_pairs.parquet"), voc)
+        voc = build_vocab(tr1); alias = learn_alias(tr1, trr, part_pairs(ALIAS_PARTS), voc)   # vocab is unsupervised
         json.dump({"voc": voc, "alias": alias}, open(vf, "w"))
     m = json.load(open(vf)); voc, alias = m["voc"], m["alias"]
     if split != "train":                                   # countries unseen in training: vocabulary from this split's S1

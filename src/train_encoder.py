@@ -4,7 +4,9 @@ anchor = S1 "name, addr"; positive = one of its S2/S3 matches (resampled each ti
 Loss: symmetric InfoNCE over in-batch candidates (+ extra distractor negatives), Matryoshka over (192, full).
 Hard negatives come from the batch construction: half of the batches are windows of the (country, name)-sorted
 mix of S1 anchors and unmatched S2/S3 distractors, so same-name / near-name businesses compete in one batch.
-Holdout: every S1 in work/q.parquet and every S2/S3 in work/pool.parquet (the 2.5% eval world) is excluded."""
+Holdout: every S1 in work/q.parquet and every S2/S3 in work/pool.parquet (the 2.5% eval world) is excluded.
+With --fit-parts E, anchors are restricted to partition E (partitions.py): matcher-partition S1s and the S2/S3 records
+they match are excluded too, so the encoder features the selector trains on are out-of-sample, as on test."""
 import argparse, json, math, os, sys, time, numpy as np, polars as pl, torch, torch.nn.functional as F
 from sentence_transformers import SentenceTransformer
 sys.path.insert(0, os.path.dirname(__file__))
@@ -16,22 +18,26 @@ from config import WORK as W
 def txt(df): return (df["name"] + ", " + df["addr"]).to_list()
 
 
-def load_data(seed=0):
+def load_data(parts=None):
     import pickle
-    cache = W + "ft_data.pkl"
+    cache = W + (f"ft_data_{parts}.pkl" if parts else "ft_data.pkl")
     if os.path.exists(cache):
         with open(cache, "rb") as f: return pickle.load(f)
-    d = _load_data()
+    d = _load_data(parts)
     with open(cache, "wb") as f: pickle.dump(d, f, protocol=5)
     return d
 
 
-def _load_data():
+def _load_data(parts=None):
     s1 = pl.read_parquet(W + "train_source1.parquet")
     rest = pl.concat([pl.read_parquet(W + "train_source2.parquet"), pl.read_parquet(W + "train_source3.parquet")])
     pairs = pl.read_parquet(W + "train_pairs.parquet")
     hq = set(pl.read_parquet(W + "q.parquet")["entity_id"].to_list())
     hp = set(pl.read_parquet(W + "pool.parquet")["entity_id"].to_list())
+    if parts:                                                     # drop other partitions' S1s and their matches
+        from partitions import load as part_ids
+        keep = part_ids(parts); gone = pairs.filter(~pl.col("s1").is_in(keep.implode()))["m"]
+        s1 = s1.filter(pl.col("entity_id").is_in(keep.implode())); hp |= set(gone.to_list())
     s1 = s1.filter(~pl.col("entity_id").is_in(list(hq)))
     rest = rest.filter(~pl.col("entity_id").is_in(list(hp)))
     pairs = pairs.filter(pl.col("s1").is_in(s1["entity_id"].implode()) & pl.col("m").is_in(rest["entity_id"].implode()))
@@ -115,10 +121,11 @@ def main():
     ap.add_argument("--hard", type=float, default=0.5); ap.add_argument("--maxlen", type=int, default=64)
     ap.add_argument("--init", default=None, help="start from a saved fine-tuned dir"); ap.add_argument("--tag", default="")
     ap.add_argument("--eval-every", type=int, default=0)
+    ap.add_argument("--fit-parts", default=None, help="restrict anchors to these S1 partitions, e.g. E")
     a = ap.parse_args()
     hf, lic, prefix, kw = MODELS[a.model]
     out = W + f"ft_{a.model}{a.tag}"
-    t0 = time.time(); d = load_data(); print(f"data: {len(d['anchors'])} anchors, {len(d['pos'])} pairs, "
+    t0 = time.time(); d = load_data(a.fit_parts); print(f"data: {len(d['anchors'])} anchors, {len(d['pos'])} pairs, "
                                           f"{(d['order_kind'] == 0).sum()} distractors {time.time()-t0:.0f}s", flush=True)
     model = load_model(a.model, a.init); model.max_seq_length = a.maxlen
     full = model.get_sentence_embedding_dimension(); dims = sorted({192, full}) if full > 192 else [full]
@@ -138,7 +145,7 @@ def main():
         if a.eval_every and step % a.eval_every == 0 and step < a.steps:
             print("eval", step, json.dumps(evaluate(model, prefix)), flush=True)
     model.save(out)
-    r = {"model": a.model, "tag": a.tag, "steps": a.steps, "batch": a.batch, "lr": a.lr, "scale": a.scale, "hard": a.hard,
+    r = {"model": a.model, "tag": a.tag, "fit_parts": a.fit_parts, "steps": a.steps, "batch": a.batch, "lr": a.lr, "scale": a.scale, "hard": a.hard,
          "train_s": round(time.time() - t0), **evaluate(model, prefix)}
     print(json.dumps(r), flush=True)
     with open(W + "finetune_results.jsonl", "a") as f: f.write(json.dumps(r) + "\n")
