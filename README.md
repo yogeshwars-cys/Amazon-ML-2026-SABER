@@ -1,4 +1,4 @@
-# Amazon ML 2026 — SABER
+# Amazon ML 2026 — SABER (Semantic Adaptive Business Entity Resolution)
 
 **SABER** is a pipeline for the Amazon ML Challenge 2026 business entity resolution task. It works in two stages:
 
